@@ -8,6 +8,9 @@ data "aws_region" "current" {}
 locals {
   azs               = length(var.availability_zones) > 0 ? var.availability_zones : data.aws_availability_zones.main.names
   nat_gateway_count = var.create_nat_gateways ? min(length(local.azs), length(var.public_subnet_cidrs), length(var.private_subnet_cidrs)) : 0
+
+  internet_gateway_count             = (var.create_internet_gateway && length(var.public_subnet_cidrs) > 0) ? 1 : 0
+  egress_only_internet_gateway_count = (var.create_egress_only_internet_gateway && length(var.public_subnet_cidrs) > 0) ? 1 : 0
 }
 
 resource "aws_vpc" "main" {
@@ -26,7 +29,7 @@ resource "aws_vpc" "main" {
 }
 
 resource "aws_internet_gateway" "public" {
-  count      = length(var.public_subnet_cidrs) > 0 ? 1 : 0
+  count      = local.internet_gateway_count
   depends_on = [aws_vpc.main]
   vpc_id     = aws_vpc.main.id
 
@@ -39,7 +42,7 @@ resource "aws_internet_gateway" "public" {
 }
 
 resource "aws_egress_only_internet_gateway" "outbound" {
-  count      = length(var.public_subnet_cidrs) > 0 ? 1 : 0
+  count      = local.egress_only_internet_gateway_count
   depends_on = [aws_vpc.main]
   vpc_id     = aws_vpc.main.id
 }
@@ -58,7 +61,7 @@ resource "aws_route_table" "public" {
 }
 
 resource "aws_route" "public" {
-  count = length(var.public_subnet_cidrs) > 0 ? 1 : 0
+  count = local.internet_gateway_count
   depends_on = [
     aws_internet_gateway.public,
     aws_route_table.public,
@@ -69,7 +72,7 @@ resource "aws_route" "public" {
 }
 
 resource "aws_route" "ipv6-public" {
-  count = length(var.public_subnet_cidrs) > 0 ? 1 : 0
+  count = local.internet_gateway_count
   depends_on = [
     aws_internet_gateway.public,
     aws_route_table.public,
@@ -83,9 +86,9 @@ resource "aws_subnet" "public" {
   count                           = length(var.public_subnet_cidrs)
   vpc_id                          = aws_vpc.main.id
   cidr_block                      = var.public_subnet_cidrs[count.index]
-  ipv6_cidr_block                 = cidrsubnet(aws_vpc.main.ipv6_cidr_block, 8, count.index)
+  ipv6_cidr_block                 = cidrsubnet(aws_vpc.main.ipv6_cidr_block, 8, var.ipv6_public_subnet_netnum_offset + count.index)
   availability_zone               = element(local.azs, count.index)
-  map_public_ip_on_launch         = true
+  map_public_ip_on_launch         = var.map_public_ip_on_launch
   assign_ipv6_address_on_creation = true
 
   tags = merge(
@@ -170,7 +173,7 @@ resource "aws_subnet" "private" {
   count                           = length(var.private_subnet_cidrs)
   vpc_id                          = aws_vpc.main.id
   cidr_block                      = var.private_subnet_cidrs[count.index]
-  ipv6_cidr_block                 = cidrsubnet(aws_vpc.main.ipv6_cidr_block, 8, count.index + length(var.public_subnet_cidrs))
+  ipv6_cidr_block                 = cidrsubnet(aws_vpc.main.ipv6_cidr_block, 8, count.index + (var.ipv6_private_subnet_netnum_offset == -1 ? length(var.public_subnet_cidrs) : var.ipv6_private_subnet_netnum_offset))
   availability_zone               = element(local.azs, count.index)
   map_public_ip_on_launch         = false
   assign_ipv6_address_on_creation = true
@@ -191,13 +194,29 @@ resource "aws_route_table_association" "private" {
 }
 
 resource "aws_vpc_endpoint" "s3" {
+  count           = var.enable_vpc_endpoints ? 1 : 0
   service_name    = "com.amazonaws.${data.aws_region.current.name}.s3"
   vpc_id          = aws_vpc.main.id
   route_table_ids = compact(concat(aws_route_table.private.*.id, aws_route_table.public.*.id))
+  policy          = var.s3_endpoint_policy
+  tags = merge(
+    var.tags,
+    {
+      "Name" = "${var.name_prefix}-s3"
+    },
+  )
 }
 
 resource "aws_vpc_endpoint" "dynamodb" {
+  count           = var.enable_vpc_endpoints ? 1 : 0
   service_name    = "com.amazonaws.${data.aws_region.current.name}.dynamodb"
   vpc_id          = aws_vpc.main.id
   route_table_ids = compact(concat(aws_route_table.private.*.id, aws_route_table.public.*.id))
+  policy          = var.dynamodb_endpoint_policy
+  tags = merge(
+    var.tags,
+    {
+      "Name" = "${var.name_prefix}-dynamodb"
+    },
+  )
 }
