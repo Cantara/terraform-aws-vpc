@@ -7,10 +7,10 @@ data "aws_region" "current" {}
 
 locals {
   azs               = length(var.availability_zones) > 0 ? var.availability_zones : data.aws_availability_zones.main.names
-  nat_gateway_count = var.create_nat_gateways ? min(length(local.azs), length(var.public_subnet_cidrs), length(var.private_subnet_cidrs)) : 0
+  nat_gateway_count = var.create_nat_gateways ? min(length(local.azs), length(var.private_subnet_cidrs)) : 0
 
-  internet_gateway_count             = (var.create_internet_gateway && length(var.public_subnet_cidrs) > 0) ? 1 : 0
-  egress_only_internet_gateway_count = (var.create_egress_only_internet_gateway && length(var.public_subnet_cidrs) > 0) ? 1 : 0
+  internet_gateway_count             = var.create_internet_gateway ? 1 : 0
+  egress_only_internet_gateway_count = var.create_egress_only_internet_gateway ? 1 : 0
 }
 
 resource "aws_vpc" "main" {
@@ -124,7 +124,7 @@ resource "aws_nat_gateway" "private" {
   ]
   count         = local.nat_gateway_count
   allocation_id = aws_eip.private[count.index].id
-  subnet_id     = element(aws_subnet.public[*].id, count.index)
+  subnet_id     = element(aws_subnet.private[*].id, count.index)
 
   tags = merge(
     var.tags,
